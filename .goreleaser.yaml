@@ -1,0 +1,97 @@
+---
+version: 2
+project_name: auditor-cli
+env:
+  - CGO_ENABLED=0
+  - GOWORK=off
+builds:
+  - id: auditor-cli-darwin-amd64
+    binary: auditor-cli
+    main: ./cmd/auditor-cli
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: auditor-cli-darwin-arm64
+    binary: auditor-cli
+    main: ./cmd/auditor-cli
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: auditor-cli-linux-amd64
+    binary: auditor-cli
+    main: ./cmd/auditor-cli
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: auditor-cli-linux-arm64
+    binary: auditor-cli
+    main: ./cmd/auditor-cli
+    goos:
+      - linux
+    goarch:
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+universal_binaries:
+  - id: auditor-cli-darwin-universal
+    ids:
+      - auditor-cli-darwin-amd64
+      - auditor-cli-darwin-arm64
+    replace: true
+    name_template: auditor-cli
+archives:
+  - id: w/version
+    ids:
+      - auditor-cli-darwin-universal
+      - auditor-cli-linux-amd64
+      - auditor-cli-linux-arm64
+    name_template: "auditor-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    formats:
+      - zip
+    files:
+      - none*
+  - id: wo/version
+    ids:
+      - auditor-cli-darwin-universal
+      - auditor-cli-linux-amd64
+      - auditor-cli-linux-arm64
+    name_template: "auditor-cli_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    formats:
+      - zip
+    files:
+      - none*
+checksum:
+  name_template: "auditor-cli_{{ .Version }}_checksums.txt"
+release:
+  github:
+    owner: akash-network
+    name: auditor-cli
+  prerelease: auto
+  mode: replace
+  draft: false
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
