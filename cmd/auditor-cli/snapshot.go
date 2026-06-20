@@ -54,7 +54,7 @@ func verifySnapshotEnvelope(resp *inventoryv1.GetInventorySnapshotResponse, nonc
 	return &verifiedSnapshot{
 		PayloadBytes: append([]byte(nil), resp.GetSnapshotPayload()...),
 		Payload:      payload,
-		PayloadHash:  sha256Bytes(resp.GetSnapshotPayload()),
+		PayloadHash:  snapshotPayloadHash(resp.GetSnapshotPayload()),
 		Provider:     payload.GetProvider(),
 	}, nil
 }

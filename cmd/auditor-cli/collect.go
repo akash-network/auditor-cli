@@ -363,6 +363,59 @@ func sha256Bytes(payload []byte) []byte {
 	return hash[:]
 }
 
+func snapshotPayloadHash(raw []byte) []byte {
+	payload, err := protoUnmarshalSnapshotPayload(raw)
+	if err != nil || !isSnapshotPayloadForHash(payload) {
+		return sha256Bytes(raw)
+	}
+
+	normalizeSnapshotPayloadForHash(payload)
+
+	canonical, err := protoMarshalDeterministic(payload)
+	if err != nil {
+		return sha256Bytes(raw)
+	}
+
+	return sha256Bytes(canonical)
+}
+
+func isSnapshotPayloadForHash(payload *inventoryv1.SnapshotPayload) bool {
+	return payload != nil &&
+		payload.GetSchemaVersion() != 0 &&
+		payload.GetProvider() != "" &&
+		payload.GetChainID() != ""
+}
+
+func normalizeSnapshotPayloadForHash(payload *inventoryv1.SnapshotPayload) {
+	payload.Nonce = nil
+	payload.Timestamp = time.Time{}
+	payload.EvidenceSections = nil
+
+	normalizeClusterForHash(&payload.Cluster)
+}
+
+func normalizeClusterForHash(cluster *inventoryv1.Cluster) {
+	for idx := range cluster.Nodes {
+		normalizeNodeResourcesForHash(&cluster.Nodes[idx].Resources)
+	}
+	for idx := range cluster.Storage {
+		normalizeResourcePairForHash(&cluster.Storage[idx].Quantity)
+	}
+}
+
+func normalizeNodeResourcesForHash(resources *inventoryv1.NodeResources) {
+	normalizeResourcePairForHash(&resources.CPU.Quantity)
+	normalizeResourcePairForHash(&resources.Memory.Quantity)
+	normalizeResourcePairForHash(&resources.GPU.Quantity)
+	normalizeResourcePairForHash(&resources.EphemeralStorage)
+	normalizeResourcePairForHash(&resources.VolumesAttached)
+	normalizeResourcePairForHash(&resources.VolumesMounted)
+}
+
+func normalizeResourcePairForHash(pair *inventoryv1.ResourcePair) {
+	pair.Allocated = nil
+}
+
 func sha256Ref(hash []byte) string {
 	return "sha256:" + hex.EncodeToString(hash)
 }
@@ -434,4 +487,29 @@ func protoUnmarshalSnapshotPayload(raw []byte) (*inventoryv1.SnapshotPayload, er
 	}
 
 	return &payload, nil
+}
+
+type deterministicMarshaler interface {
+	XXX_Size() int
+	XXX_Marshal([]byte, bool) ([]byte, error)
+}
+
+func protoMarshalDeterministic(msg proto.Message) ([]byte, error) {
+	if msg, ok := msg.(deterministicMarshaler); ok {
+		payload, err := msg.XXX_Marshal(make([]byte, 0, msg.XXX_Size()), true)
+		if err != nil {
+			return nil, err
+		}
+
+		return append([]byte(nil), payload...), nil
+	}
+
+	var buf proto.Buffer
+
+	buf.SetDeterministic(true)
+	if err := buf.Marshal(msg); err != nil {
+		return nil, err
+	}
+
+	return append([]byte(nil), buf.Bytes()...), nil
 }

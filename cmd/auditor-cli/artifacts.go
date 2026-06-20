@@ -43,7 +43,7 @@ func validateCollectedArtifactLayout(artifactDir string, evidence EvidenceDocume
 	if err != nil {
 		return fmt.Errorf("read %s: %w", snapshotPayloadFile, err)
 	}
-	payloadHash := sha256Ref(sha256Bytes(payload))
+	payloadHash := sha256Ref(snapshotPayloadHash(payload))
 	if evidence.SnapshotHash != payloadHash {
 		return fmt.Errorf("snapshot hash mismatch between evidence and %s", snapshotPayloadFile)
 	}

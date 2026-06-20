@@ -13,6 +13,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/gogoproto/proto"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	inventoryv1 "pkg.akt.dev/go/inventory/v1"
 )
@@ -39,6 +40,162 @@ func TestVerifySnapshotEnvelopeAndSignature(t *testing.T) {
 
 	err = verifyProviderSignature(verified.PayloadBytes, resp.GetSignature(), priv.PubKey(), provider)
 	require.NoError(t, err)
+}
+
+func TestSnapshotPayloadHashIgnoresChallengeFields(t *testing.T) {
+	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Nonce:         []byte("12345678901234567890123456789012"),
+		Timestamp:     time.Unix(1, 0).UTC(),
+		ResourceSummary: inventoryv1.SnapshotResourceSummary{
+			TotalVCPUs: 32,
+		},
+	})
+	require.NoError(t, err)
+
+	second, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Nonce:         []byte("21098765432109876543210987654321"),
+		Timestamp:     time.Unix(2, 0).UTC(),
+		ResourceSummary: inventoryv1.SnapshotResourceSummary{
+			TotalVCPUs: 32,
+		},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
+}
+
+func TestSnapshotPayloadHashIgnoresVolatileInventoryFields(t *testing.T) {
+	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Nonce:         []byte("12345678901234567890123456789012"),
+		Timestamp:     time.Unix(1, 0).UTC(),
+		Cluster: inventoryv1.Cluster{
+			Nodes: []inventoryv1.Node{{
+				Name: "node-1",
+				Resources: inventoryv1.NodeResources{
+					CPU: inventoryv1.CPU{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("32"),
+						Allocated:   testQuantity("1250m"),
+						Capacity:    testQuantity("32"),
+					}},
+					Memory: inventoryv1.Memory{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("128Gi"),
+						Allocated:   testQuantity("708Mi"),
+						Capacity:    testQuantity("128Gi"),
+					}},
+				},
+			}},
+		},
+		EvidenceSections: []inventoryv1.SnapshotEvidenceSection{{
+			Name:    "test",
+			Payload: []byte("first"),
+		}},
+	})
+	require.NoError(t, err)
+
+	second, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Nonce:         []byte("21098765432109876543210987654321"),
+		Timestamp:     time.Unix(2, 0).UTC(),
+		Cluster: inventoryv1.Cluster{
+			Nodes: []inventoryv1.Node{{
+				Name: "node-1",
+				Resources: inventoryv1.NodeResources{
+					CPU: inventoryv1.CPU{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("32"),
+						Allocated:   testQuantity("2500m"),
+						Capacity:    testQuantity("32"),
+					}},
+					Memory: inventoryv1.Memory{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("128Gi"),
+						Allocated:   testQuantity("1Gi"),
+						Capacity:    testQuantity("128Gi"),
+					}},
+				},
+			}},
+		},
+		EvidenceSections: []inventoryv1.SnapshotEvidenceSection{{
+			Name:    "test",
+			Payload: []byte("second"),
+		}},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
+}
+
+func TestSnapshotPayloadHashIncludesInventoryMaterial(t *testing.T) {
+	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		ResourceSummary: inventoryv1.SnapshotResourceSummary{
+			TotalVCPUs: 32,
+		},
+	})
+	require.NoError(t, err)
+
+	second, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		ResourceSummary: inventoryv1.SnapshotResourceSummary{
+			TotalVCPUs: 64,
+		},
+	})
+	require.NoError(t, err)
+
+	require.NotEqual(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
+}
+
+func TestSnapshotPayloadHashIncludesCapacityMaterial(t *testing.T) {
+	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Cluster: inventoryv1.Cluster{
+			Nodes: []inventoryv1.Node{{
+				Name: "node-1",
+				Resources: inventoryv1.NodeResources{
+					CPU: inventoryv1.CPU{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("32"),
+						Capacity:    testQuantity("32"),
+					}},
+				},
+			}},
+		},
+	})
+	require.NoError(t, err)
+
+	second, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
+		SchemaVersion: 1,
+		Provider:      "akash1provider",
+		ChainID:       "akash-local",
+		Cluster: inventoryv1.Cluster{
+			Nodes: []inventoryv1.Node{{
+				Name: "node-1",
+				Resources: inventoryv1.NodeResources{
+					CPU: inventoryv1.CPU{Quantity: inventoryv1.ResourcePair{
+						Allocatable: testQuantity("64"),
+						Capacity:    testQuantity("64"),
+					}},
+				},
+			}},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NotEqual(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
 }
 
 func TestVerifySnapshotEnvelopeRejectsNonceMismatch(t *testing.T) {
@@ -167,6 +324,11 @@ func TestMarshalEvidenceCanonicalRejectsAttestedTierAboveTargetTier(t *testing.T
 	_, _, err := marshalEvidenceCanonical(evidence)
 	require.ErrorContains(t, err, "evidence semantic validation failed")
 	require.ErrorContains(t, err, `attested_tier "L2" exceeds target_tier "L1"`)
+}
+
+func testQuantity(val string) *resource.Quantity {
+	q := resource.MustParse(val)
+	return &q
 }
 
 func TestMarshalEvidenceCanonicalRejectsMalformedBase64(t *testing.T) {
