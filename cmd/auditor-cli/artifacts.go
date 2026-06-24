@@ -9,11 +9,14 @@ import (
 )
 
 const (
-	collectionFile      = "collection.json"
-	nonceFile           = "nonce.bin"
-	snapshotPayloadFile = "snapshot_payload.pb"
-	snapshotJSONFile    = "snapshot_payload.json"
-	snapshotSigFile     = "snapshot_signature.bin"
+	collectionFile               = "collection.json"
+	nonceFile                    = "nonce.bin"
+	snapshotPayloadFile          = "snapshot_payload.pb"
+	snapshotJSONFile             = "snapshot_payload.json"
+	snapshotSigFile              = "snapshot_signature.bin"
+	challengeSnapshotPayloadFile = "challenge_snapshot_payload.pb"
+	challengeSnapshotJSONFile    = "challenge_snapshot_payload.json"
+	challengeSnapshotSigFile     = "challenge_snapshot_signature.bin"
 )
 
 func validateCollectedArtifactLayout(artifactDir string, evidence EvidenceDocument) error {
@@ -50,6 +53,9 @@ func validateCollectedArtifactLayout(artifactDir string, evidence EvidenceDocume
 	if collection.SnapshotPayloadHash != "" && collection.SnapshotPayloadHash != payloadHash {
 		return fmt.Errorf("snapshot hash mismatch between %s and %s", collectionFile, snapshotPayloadFile)
 	}
+	if collection.CommittedSnapshotHash != "" && collection.CommittedSnapshotHash != payloadHash {
+		return fmt.Errorf("committed snapshot hash mismatch between %s and %s", collectionFile, snapshotPayloadFile)
+	}
 
 	signature, err := os.ReadFile(filepath.Join(artifactDir, snapshotSigFile))
 	if err != nil {
@@ -60,6 +66,28 @@ func validateCollectedArtifactLayout(artifactDir string, evidence EvidenceDocume
 	}
 	if _, err := os.Stat(filepath.Join(artifactDir, snapshotJSONFile)); err != nil {
 		return fmt.Errorf("read %s: %w", snapshotJSONFile, err)
+	}
+
+	challengePayload, err := os.ReadFile(filepath.Join(artifactDir, challengeSnapshotPayloadFile))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", challengeSnapshotPayloadFile, err)
+	}
+	challengeHash := sha256Ref(snapshotPayloadHash(challengePayload))
+	if evidence.ChallengeSnapshotHash != challengeHash {
+		return fmt.Errorf("challenge snapshot hash mismatch between evidence and %s", challengeSnapshotPayloadFile)
+	}
+	if collection.ChallengeSnapshotHash != "" && collection.ChallengeSnapshotHash != challengeHash {
+		return fmt.Errorf("challenge snapshot hash mismatch between %s and %s", collectionFile, challengeSnapshotPayloadFile)
+	}
+	challengeSignature, err := os.ReadFile(filepath.Join(artifactDir, challengeSnapshotSigFile))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", challengeSnapshotSigFile, err)
+	}
+	if len(challengeSignature) == 0 {
+		return fmt.Errorf("%s is empty", challengeSnapshotSigFile)
+	}
+	if _, err := os.Stat(filepath.Join(artifactDir, challengeSnapshotJSONFile)); err != nil {
+		return fmt.Errorf("read %s: %w", challengeSnapshotJSONFile, err)
 	}
 
 	if collection.Provider != "" && collection.Provider != evidence.Provider {

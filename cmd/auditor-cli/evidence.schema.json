@@ -16,6 +16,7 @@
     "collected_at",
     "block_height",
     "snapshot_hash",
+    "challenge_snapshot_hash",
     "inventory_nonce",
     "software",
     "network_baseline",
@@ -60,6 +61,9 @@
       "$ref": "#/$defs/uint64_string"
     },
     "snapshot_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "challenge_snapshot_hash": {
       "$ref": "#/$defs/sha256"
     },
     "inventory_nonce": {

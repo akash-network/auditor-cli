@@ -59,6 +59,50 @@ func verifySnapshotEnvelope(resp *inventoryv1.GetInventorySnapshotResponse, nonc
 	}, nil
 }
 
+func verifyCommittedSnapshotEnvelope(resp *inventoryv1.GetCommittedInventorySnapshotResponse) (*verifiedSnapshot, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("empty committed inventory snapshot response")
+	}
+	if len(resp.GetSnapshotPayload()) == 0 {
+		return nil, fmt.Errorf("empty committed inventory snapshot payload")
+	}
+	if len(resp.GetSignature()) == 0 {
+		return nil, fmt.Errorf("empty committed inventory snapshot signature")
+	}
+
+	payload, err := protoUnmarshalSnapshotPayload(resp.GetSnapshotPayload())
+	if err != nil {
+		return nil, fmt.Errorf("decode committed snapshot payload: %w", err)
+	}
+	if len(payload.GetNonce()) != 0 {
+		return nil, fmt.Errorf("committed snapshot payload must not contain nonce")
+	}
+	if payload.GetProvider() == "" {
+		return nil, fmt.Errorf("committed snapshot payload missing provider")
+	}
+	if resp.GetProvider() != "" && resp.GetProvider() != payload.GetProvider() {
+		return nil, fmt.Errorf("committed snapshot response provider %q does not match payload provider %q", resp.GetProvider(), payload.GetProvider())
+	}
+	if payload.GetChainID() == "" {
+		return nil, fmt.Errorf("committed snapshot payload missing chain_id")
+	}
+	if payload.GetSchemaVersion() == 0 {
+		return nil, fmt.Errorf("committed snapshot payload missing schema_version")
+	}
+
+	hash := snapshotPayloadHash(resp.GetSnapshotPayload())
+	if len(resp.GetSnapshotHash()) != 0 && !bytes.Equal(resp.GetSnapshotHash(), hash) {
+		return nil, fmt.Errorf("committed snapshot hash does not match payload")
+	}
+
+	return &verifiedSnapshot{
+		PayloadBytes: append([]byte(nil), resp.GetSnapshotPayload()...),
+		Payload:      payload,
+		PayloadHash:  hash,
+		Provider:     payload.GetProvider(),
+	}, nil
+}
+
 func verifyProviderSignature(payload, signature []byte, pubKey cryptotypes.PubKey, provider string) error {
 	if pubKey == nil {
 		return fmt.Errorf("missing provider public key")

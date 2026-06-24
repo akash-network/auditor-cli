@@ -42,7 +42,7 @@ func TestVerifySnapshotEnvelopeAndSignature(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestSnapshotPayloadHashIgnoresChallengeFields(t *testing.T) {
+func TestSnapshotPayloadHashIncludesChallengeFields(t *testing.T) {
 	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
 		SchemaVersion: 1,
 		Provider:      "akash1provider",
@@ -67,10 +67,10 @@ func TestSnapshotPayloadHashIgnoresChallengeFields(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
+	require.NotEqual(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
 }
 
-func TestSnapshotPayloadHashIgnoresVolatileInventoryFields(t *testing.T) {
+func TestSnapshotPayloadHashIncludesPayloadFields(t *testing.T) {
 	first, err := protoMarshalDeterministic(&inventoryv1.SnapshotPayload{
 		SchemaVersion: 1,
 		Provider:      "akash1provider",
@@ -131,7 +131,7 @@ func TestSnapshotPayloadHashIgnoresVolatileInventoryFields(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
+	require.NotEqual(t, snapshotPayloadHash(first), snapshotPayloadHash(second))
 }
 
 func TestSnapshotPayloadHashIncludesInventoryMaterial(t *testing.T) {
@@ -215,18 +215,19 @@ func TestVerifySnapshotEnvelopeRejectsNonceMismatch(t *testing.T) {
 
 func TestMarshalEvidenceCanonicalIsStable(t *testing.T) {
 	evidence := EvidenceDocument{
-		SchemaVersion:        evidenceSchema,
-		ChainID:              "akash-local",
-		Provider:             "akash1provider",
-		Auditor:              "akash1auditor",
-		AuditEscrowID:        "7",
-		TargetTier:           "L1",
-		AttestedTier:         "L1",
-		AttestedCapabilities: []string{"persistent_storage"},
-		CollectedAt:          "2026-05-19T00:00:00Z",
-		BlockHeight:          "123",
-		SnapshotHash:         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		InventoryNonce:       "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		SchemaVersion:         evidenceSchema,
+		ChainID:               "akash-local",
+		Provider:              "akash1provider",
+		Auditor:               "akash1auditor",
+		AuditEscrowID:         "7",
+		TargetTier:            "L1",
+		AttestedTier:          "L1",
+		AttestedCapabilities:  []string{"persistent_storage"},
+		CollectedAt:           "2026-05-19T00:00:00Z",
+		BlockHeight:           "123",
+		SnapshotHash:          "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ChallengeSnapshotHash: "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		InventoryNonce:        "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
 		Software: SoftwareEvidence{
 			Version:            "test",
 			BinaryHash:         "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
@@ -408,16 +409,24 @@ func TestValidateEvidenceInputsAcceptsSoftwareBinaryHash(t *testing.T) {
 
 func TestEvidenceChecksMapObservedChainFacts(t *testing.T) {
 	payloadHash := []byte("12345678901234567890123456789012")
-	snapshot := &verifiedSnapshot{
+	committed := &verifiedSnapshot{
 		PayloadHash:           payloadHash,
 		SignatureVerified:     true,
 		ProviderPubKeyAddress: "akash1provider",
 		Payload: &inventoryv1.SnapshotPayload{
 			Timestamp: time.Unix(1, 0).UTC(),
-			Nonce:     []byte("12345678901234567890123456789012"),
 			ResourceSummary: inventoryv1.SnapshotResourceSummary{
 				SoftwareVersion: "provider-services-test",
 			},
+		},
+	}
+	challenge := &verifiedSnapshot{
+		PayloadHash:           []byte("abcdefabcdefabcdefabcdefabcdef12"),
+		SignatureVerified:     true,
+		ProviderPubKeyAddress: "akash1provider",
+		Payload: &inventoryv1.SnapshotPayload{
+			Timestamp: time.Unix(2, 0).UTC(),
+			Nonce:     []byte("12345678901234567890123456789012"),
 		},
 	}
 	chainFacts := &chainFactsResult{
@@ -433,7 +442,7 @@ func TestEvidenceChecksMapObservedChainFacts(t *testing.T) {
 		ProviderFaultedLeases:  1,
 	}
 
-	checks := evidenceChecks(snapshot, chainFacts)
+	checks := evidenceChecks(committed, challenge, chainFacts)
 	byName := evidenceChecksByName(checks)
 
 	require.Equal(t, "pass", byName["provider_registered_on_chain"].Status)
@@ -448,18 +457,24 @@ func TestEvidenceChecksMapObservedChainFacts(t *testing.T) {
 
 func TestEvidenceChecksDoNotPassUnobservedFacts(t *testing.T) {
 	payloadHash := []byte("12345678901234567890123456789012")
-	snapshot := &verifiedSnapshot{
+	committed := &verifiedSnapshot{
 		PayloadHash: payloadHash,
 		Payload: &inventoryv1.SnapshotPayload{
 			Timestamp: time.Unix(1, 0).UTC(),
-			Nonce:     []byte("12345678901234567890123456789012"),
 			ResourceSummary: inventoryv1.SnapshotResourceSummary{
 				SoftwareVersion: "provider-services-test",
 			},
 		},
 	}
+	challenge := &verifiedSnapshot{
+		PayloadHash: []byte("abcdefabcdefabcdefabcdefabcdef12"),
+		Payload: &inventoryv1.SnapshotPayload{
+			Timestamp: time.Unix(2, 0).UTC(),
+			Nonce:     []byte("12345678901234567890123456789012"),
+		},
+	}
 
-	checks := evidenceChecks(snapshot, &chainFactsResult{})
+	checks := evidenceChecks(committed, challenge, &chainFactsResult{})
 	byName := evidenceChecksByName(checks)
 
 	require.Equal(t, "fail", byName["provider_registered_on_chain"].Status)
@@ -502,18 +517,19 @@ func mustSnapshotPayload(t *testing.T, provider string, nonce []byte) []byte {
 
 func validEvidenceDocument() EvidenceDocument {
 	return EvidenceDocument{
-		SchemaVersion:        evidenceSchema,
-		ChainID:              "akash-local",
-		Provider:             "akash1provider",
-		Auditor:              "akash1auditor",
-		AuditEscrowID:        "7",
-		TargetTier:           "L1",
-		AttestedTier:         "L1",
-		AttestedCapabilities: []string{"persistent_storage"},
-		CollectedAt:          "2026-05-19T00:00:00Z",
-		BlockHeight:          "123",
-		SnapshotHash:         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		InventoryNonce:       "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		SchemaVersion:         evidenceSchema,
+		ChainID:               "akash-local",
+		Provider:              "akash1provider",
+		Auditor:               "akash1auditor",
+		AuditEscrowID:         "7",
+		TargetTier:            "L1",
+		AttestedTier:          "L1",
+		AttestedCapabilities:  []string{"persistent_storage"},
+		CollectedAt:           "2026-05-19T00:00:00Z",
+		BlockHeight:           "123",
+		SnapshotHash:          "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ChallengeSnapshotHash: "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		InventoryNonce:        "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
 		Software: SoftwareEvidence{
 			Version:            "test",
 			BinaryHash:         "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
@@ -561,12 +577,15 @@ func writeCollectedEvidenceArtifact(t *testing.T, mutate func(*EvidenceDocument)
 	t.Helper()
 
 	dir := t.TempDir()
-	payload := []byte("canonical test snapshot payload")
+	payload := []byte("canonical committed snapshot payload")
+	challengePayload := []byte("canonical challenge snapshot payload")
 	payloadHash := sha256Ref(sha256Bytes(payload))
+	challengePayloadHash := sha256Ref(sha256Bytes(challengePayload))
 	nonce := []byte("12345678901234567890123456789012")
 
 	evidence := validEvidenceDocument()
 	evidence.SnapshotHash = payloadHash
+	evidence.ChallengeSnapshotHash = challengePayloadHash
 	evidence.InventoryNonce = base64.StdEncoding.EncodeToString(nonce)
 	evidence.NetworkBaseline.ProofRef = payloadHash
 	evidence.SustainedValidation.BaselineID = payloadHash
@@ -584,25 +603,34 @@ func writeCollectedEvidenceArtifact(t *testing.T, mutate func(*EvidenceDocument)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, snapshotPayloadFile), payload, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, snapshotSigFile), []byte("signature"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, snapshotJSONFile), []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, challengeSnapshotPayloadFile), challengePayload, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, challengeSnapshotSigFile), []byte("challenge-signature"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, challengeSnapshotJSONFile), []byte("{}\n"), 0o644))
 
 	collection := collectionArtifact{
-		SchemaVersion:       evidenceSchema + ".collection",
-		CollectedAt:         evidence.CollectedAt,
-		Provider:            evidence.Provider,
-		Auditor:             evidence.Auditor,
-		AuditEscrowID:       evidence.AuditEscrowID,
-		ChainID:             evidence.ChainID,
-		BlockHeight:         evidence.BlockHeight,
-		SnapshotPayloadHash: payloadHash,
-		InventoryNonce:      evidence.InventoryNonce,
-		Signature:           base64.StdEncoding.EncodeToString([]byte("signature")),
-		SignatureVerified:   true,
+		SchemaVersion:         evidenceSchema + ".collection",
+		CollectedAt:           evidence.CollectedAt,
+		Provider:              evidence.Provider,
+		Auditor:               evidence.Auditor,
+		AuditEscrowID:         evidence.AuditEscrowID,
+		ChainID:               evidence.ChainID,
+		BlockHeight:           evidence.BlockHeight,
+		SnapshotPayloadHash:   payloadHash,
+		CommittedSnapshotHash: payloadHash,
+		ChallengeSnapshotHash: challengePayloadHash,
+		InventoryNonce:        evidence.InventoryNonce,
+		Signature:             base64.StdEncoding.EncodeToString([]byte("signature")),
+		ChallengeSignature:    base64.StdEncoding.EncodeToString([]byte("challenge-signature")),
+		SignatureVerified:     true,
 		Files: map[string]string{
-			"nonce":            filepath.Join(dir, nonceFile),
-			"snapshot_payload": filepath.Join(dir, snapshotPayloadFile),
-			"signature":        filepath.Join(dir, snapshotSigFile),
-			"payload_json":     filepath.Join(dir, snapshotJSONFile),
-			"evidence_draft":   filepath.Join(dir, evidenceDraftFile),
+			"nonce":                      filepath.Join(dir, nonceFile),
+			"snapshot_payload":           filepath.Join(dir, snapshotPayloadFile),
+			"signature":                  filepath.Join(dir, snapshotSigFile),
+			"payload_json":               filepath.Join(dir, snapshotJSONFile),
+			"challenge_snapshot_payload": filepath.Join(dir, challengeSnapshotPayloadFile),
+			"challenge_signature":        filepath.Join(dir, challengeSnapshotSigFile),
+			"challenge_payload_json":     filepath.Join(dir, challengeSnapshotJSONFile),
+			"evidence_draft":             filepath.Join(dir, evidenceDraftFile),
 		},
 	}
 	require.NoError(t, writeJSON(filepath.Join(dir, collectionFile), collection))

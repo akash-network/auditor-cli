@@ -8,23 +8,24 @@ import (
 )
 
 type EvidenceDocument struct {
-	SchemaVersion        string              `json:"schema_version"`
-	ChainID              string              `json:"chain_id"`
-	Provider             string              `json:"provider"`
-	Auditor              string              `json:"auditor"`
-	AuditEscrowID        string              `json:"audit_escrow_id"`
-	TargetTier           string              `json:"target_tier"`
-	AttestedTier         string              `json:"attested_tier"`
-	AttestedCapabilities []string            `json:"attested_capabilities"`
-	CollectedAt          string              `json:"collected_at"`
-	BlockHeight          string              `json:"block_height"`
-	SnapshotHash         string              `json:"snapshot_hash"`
-	InventoryNonce       string              `json:"inventory_nonce"`
-	Software             SoftwareEvidence    `json:"software"`
-	NetworkBaseline      NetworkBaseline     `json:"network_baseline"`
-	SustainedValidation  SustainedValidation `json:"sustained_validation"`
-	Checks               []EvidenceCheck     `json:"checks"`
-	FaultContext         FaultContext        `json:"fault_context"`
+	SchemaVersion         string              `json:"schema_version"`
+	ChainID               string              `json:"chain_id"`
+	Provider              string              `json:"provider"`
+	Auditor               string              `json:"auditor"`
+	AuditEscrowID         string              `json:"audit_escrow_id"`
+	TargetTier            string              `json:"target_tier"`
+	AttestedTier          string              `json:"attested_tier"`
+	AttestedCapabilities  []string            `json:"attested_capabilities"`
+	CollectedAt           string              `json:"collected_at"`
+	BlockHeight           string              `json:"block_height"`
+	SnapshotHash          string              `json:"snapshot_hash"`
+	ChallengeSnapshotHash string              `json:"challenge_snapshot_hash"`
+	InventoryNonce        string              `json:"inventory_nonce"`
+	Software              SoftwareEvidence    `json:"software"`
+	NetworkBaseline       NetworkBaseline     `json:"network_baseline"`
+	SustainedValidation   SustainedValidation `json:"sustained_validation"`
+	Checks                []EvidenceCheck     `json:"checks"`
+	FaultContext          FaultContext        `json:"fault_context"`
 }
 
 type SoftwareEvidence struct {
@@ -66,9 +67,10 @@ type FaultContext struct {
 	Reason           string `json:"reason"`
 }
 
-func buildEvidence(cfg collectConfig, snapshot *verifiedSnapshot, chainFacts *chainFactsResult, collectedAt time.Time, checks []EvidenceCheck) EvidenceDocument {
-	snapshotRef := sha256Ref(snapshot.PayloadHash)
-	resourceSummary := snapshot.Payload.GetResourceSummary()
+func buildEvidence(cfg collectConfig, committed *verifiedSnapshot, challenge *verifiedSnapshot, chainFacts *chainFactsResult, collectedAt time.Time, checks []EvidenceCheck) EvidenceDocument {
+	snapshotRef := sha256Ref(committed.PayloadHash)
+	challengeRef := sha256Ref(challenge.PayloadHash)
+	resourceSummary := committed.Payload.GetResourceSummary()
 	softwareHash := cfg.softwareBinaryHash
 	softwareStatus := "observed_only"
 	if softwareHash == "" {
@@ -81,18 +83,19 @@ func buildEvidence(cfg collectConfig, snapshot *verifiedSnapshot, chainFacts *ch
 	}
 
 	return EvidenceDocument{
-		SchemaVersion:        evidenceSchema,
-		ChainID:              snapshot.Payload.GetChainID(),
-		Provider:             snapshot.Provider,
-		Auditor:              cfg.auditor,
-		AuditEscrowID:        cfg.auditEscrowID,
-		TargetTier:           cfg.targetTier,
-		AttestedTier:         cfg.attestedTier,
-		AttestedCapabilities: append([]string(nil), cfg.attestedCapabilities...),
-		CollectedAt:          collectedAt.Format(time.RFC3339Nano),
-		BlockHeight:          chainFacts.BlockHeight,
-		SnapshotHash:         snapshotRef,
-		InventoryNonce:       base64.StdEncoding.EncodeToString(snapshot.Payload.GetNonce()),
+		SchemaVersion:         evidenceSchema,
+		ChainID:               committed.Payload.GetChainID(),
+		Provider:              committed.Provider,
+		Auditor:               cfg.auditor,
+		AuditEscrowID:         cfg.auditEscrowID,
+		TargetTier:            cfg.targetTier,
+		AttestedTier:          cfg.attestedTier,
+		AttestedCapabilities:  append([]string(nil), cfg.attestedCapabilities...),
+		CollectedAt:           collectedAt.Format(time.RFC3339Nano),
+		BlockHeight:           chainFacts.BlockHeight,
+		SnapshotHash:          snapshotRef,
+		ChallengeSnapshotHash: challengeRef,
+		InventoryNonce:        base64.StdEncoding.EncodeToString(challenge.Payload.GetNonce()),
 		Software: SoftwareEvidence{
 			Version:            resourceSummary.GetSoftwareVersion(),
 			BinaryHash:         softwareHash,
@@ -118,16 +121,17 @@ func buildEvidence(cfg collectConfig, snapshot *verifiedSnapshot, chainFacts *ch
 	}
 }
 
-func evidenceChecks(snapshot *verifiedSnapshot, chainFacts *chainFactsResult) []EvidenceCheck {
+func evidenceChecks(committed *verifiedSnapshot, challenge *verifiedSnapshot, chainFacts *chainFactsResult) []EvidenceCheck {
 	if chainFacts == nil {
 		chainFacts = &chainFactsResult{}
 	}
 
-	observedAt := snapshot.Payload.GetTimestamp().UTC().Format(time.RFC3339Nano)
-	snapshotRef := sha256Ref(snapshot.PayloadHash)
-	resourceSummary := snapshot.Payload.GetResourceSummary()
+	observedAt := challenge.Payload.GetTimestamp().UTC().Format(time.RFC3339Nano)
+	snapshotRef := sha256Ref(committed.PayloadHash)
+	challengeRef := sha256Ref(challenge.PayloadHash)
+	resourceSummary := committed.Payload.GetResourceSummary()
 	signatureStatus := "pass"
-	if !snapshot.SignatureVerified {
+	if !committed.SignatureVerified || !challenge.SignatureVerified {
 		signatureStatus = "not_evaluated"
 	}
 
@@ -171,26 +175,28 @@ func evidenceChecks(snapshot *verifiedSnapshot, chainFacts *chainFactsResult) []
 		},
 		{
 			Name:       "snapshot_hash_matches_chain",
-			Status:     statusFromOptionalPass(chainFacts.SnapshotObserved, chainSnapshotMatchesPayload(chainFacts, snapshot.PayloadHash)),
+			Status:     statusFromOptionalPass(chainFacts.SnapshotObserved, chainSnapshotMatchesPayload(chainFacts, committed.PayloadHash)),
 			ProofRef:   snapshotRef,
 			ObservedAt: observedAt,
 		},
 		{
 			Name:       "inventory_nonce_matches",
 			Status:     "pass",
-			ProofRef:   snapshotRef,
+			ProofRef:   challengeRef,
 			ObservedAt: observedAt,
 			Details: map[string]any{
-				"nonce_length": len(snapshot.Payload.GetNonce()),
+				"nonce_length": len(challenge.Payload.GetNonce()),
 			},
 		},
 		{
 			Name:       "inventory_signature_valid",
 			Status:     signatureStatus,
-			ProofRef:   snapshotRef,
+			ProofRef:   challengeRef,
 			ObservedAt: observedAt,
 			Details: map[string]any{
-				"provider_pubkey_address": chainFacts.ProviderPubKeyAddress,
+				"provider_pubkey_address":      chainFacts.ProviderPubKeyAddress,
+				"committed_signature_verified": committed.SignatureVerified,
+				"challenge_signature_verified": challenge.SignatureVerified,
 			},
 		},
 		{

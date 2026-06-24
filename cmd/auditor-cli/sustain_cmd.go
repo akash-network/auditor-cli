@@ -200,7 +200,16 @@ func writeSustainedEvidenceArtifacts(outputDir, currentDir string, current Evide
 }
 
 func copyCollectedArtifacts(srcDir, dstDir string) error {
-	for _, name := range []string{collectionFile, nonceFile, snapshotPayloadFile, snapshotJSONFile, snapshotSigFile} {
+	for _, name := range []string{
+		collectionFile,
+		nonceFile,
+		snapshotPayloadFile,
+		snapshotJSONFile,
+		snapshotSigFile,
+		challengeSnapshotPayloadFile,
+		challengeSnapshotJSONFile,
+		challengeSnapshotSigFile,
+	} {
 		if err := copyArtifactFile(filepath.Join(srcDir, name), filepath.Join(dstDir, name)); err != nil {
 			return err
 		}

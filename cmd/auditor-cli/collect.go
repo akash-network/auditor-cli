@@ -55,12 +55,16 @@ type collectionArtifact struct {
 	ChainID               string            `json:"chain_id"`
 	BlockHeight           string            `json:"block_height"`
 	SnapshotPayloadHash   string            `json:"snapshot_payload_hash"`
+	CommittedSnapshotHash string            `json:"committed_snapshot_hash"`
+	ChallengeSnapshotHash string            `json:"challenge_snapshot_hash"`
 	InventoryNonce        string            `json:"inventory_nonce"`
 	Signature             string            `json:"signature"`
+	ChallengeSignature    string            `json:"challenge_signature"`
 	SignatureVerified     bool              `json:"signature_verified"`
 	SignatureSkipped      bool              `json:"signature_skipped,omitempty"`
 	ProviderPubKeyAddress string            `json:"provider_pubkey_address,omitempty"`
 	Payload               payloadSummary    `json:"payload"`
+	ChallengePayload      payloadSummary    `json:"challenge_payload"`
 	Checks                []EvidenceCheck   `json:"checks"`
 	Warnings              []string          `json:"warnings,omitempty"`
 	Files                 map[string]string `json:"files"`
@@ -147,19 +151,20 @@ func runCollect(cmd *cobra.Command, cfg collectConfig) error {
 	}
 	defer providerConn.Close()
 
-	snapshotResp, err := inventoryv1.NewInventoryServiceClient(providerConn).GetInventorySnapshot(ctx, &inventoryv1.GetInventorySnapshotRequest{
+	inventoryClient := inventoryv1.NewInventoryServiceClient(providerConn)
+	challengeResp, err := inventoryClient.GetInventorySnapshot(ctx, &inventoryv1.GetInventorySnapshotRequest{
 		Nonce: nonce,
 	})
 	if err != nil {
 		return err
 	}
 
-	verified, err := verifySnapshotEnvelope(snapshotResp, nonce)
+	challenge, err := verifySnapshotEnvelope(challengeResp, nonce)
 	if err != nil {
 		return err
 	}
 
-	chainFacts, err := collectChainFacts(ctx, cfg, verified.Provider)
+	chainFacts, err := collectChainFacts(ctx, cfg, challenge.Provider)
 	if err != nil {
 		if !cfg.allowMissingChainPubKey {
 			return err
@@ -169,35 +174,65 @@ func runCollect(cmd *cobra.Command, cfg collectConfig) error {
 			Warnings:    []string{err.Error()},
 		}
 	}
+	if !chainFacts.SnapshotObserved || len(chainFacts.SnapshotHash) == 0 {
+		return fmt.Errorf("provider %q has no committed snapshot on-chain", challenge.Provider)
+	}
+
+	committedResp, err := inventoryClient.GetCommittedInventorySnapshot(ctx, &inventoryv1.GetCommittedInventorySnapshotRequest{
+		SnapshotHash: chainFacts.SnapshotHash,
+	})
+	if err != nil {
+		return err
+	}
+
+	committed, err := verifyCommittedSnapshotEnvelope(committedResp)
+	if err != nil {
+		return err
+	}
+	if committed.Provider != challenge.Provider {
+		return fmt.Errorf("committed snapshot provider %q does not match challenge provider %q", committed.Provider, challenge.Provider)
+	}
+	if committed.Payload.GetChainID() != challenge.Payload.GetChainID() {
+		return fmt.Errorf("committed snapshot chain_id %q does not match challenge chain_id %q", committed.Payload.GetChainID(), challenge.Payload.GetChainID())
+	}
+	if !chainSnapshotMatchesPayload(chainFacts, committed.PayloadHash) {
+		return fmt.Errorf("committed snapshot hash does not match chain")
+	}
 
 	if chainFacts.ProviderPubKey != nil {
-		if err := verifyProviderSignature(verified.PayloadBytes, snapshotResp.GetSignature(), chainFacts.ProviderPubKey, verified.Provider); err != nil {
+		if err := verifyProviderSignature(committed.PayloadBytes, committedResp.GetSignature(), chainFacts.ProviderPubKey, committed.Provider); err != nil {
 			return err
 		}
-		verified.SignatureVerified = true
-		verified.ProviderPubKeyAddress = chainFacts.ProviderPubKeyAddress
+		if err := verifyProviderSignature(challenge.PayloadBytes, challengeResp.GetSignature(), chainFacts.ProviderPubKey, challenge.Provider); err != nil {
+			return err
+		}
+		committed.SignatureVerified = true
+		committed.ProviderPubKeyAddress = chainFacts.ProviderPubKeyAddress
+		challenge.SignatureVerified = true
+		challenge.ProviderPubKeyAddress = chainFacts.ProviderPubKeyAddress
 	} else {
-		verified.SignatureSkipped = true
+		committed.SignatureSkipped = true
+		challenge.SignatureSkipped = true
 	}
 
 	outDir := cfg.outputDir
 	if outDir == "" {
-		outDir = defaultOutputDir(verified.Provider)
+		outDir = defaultOutputDir(committed.Provider)
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
 
-	files, err := writeArtifacts(outDir, snapshotResp, verified.Payload, nonce)
+	files, err := writeArtifacts(outDir, committedResp, committed.Payload, challengeResp, challenge.Payload, nonce)
 	if err != nil {
 		return err
 	}
 
 	collectedAt := time.Now().UTC()
-	checks := evidenceChecks(verified, chainFacts)
+	checks := evidenceChecks(committed, challenge, chainFacts)
 	warnings := append([]string(nil), chainFacts.Warnings...)
 
-	evidence := buildEvidence(cfg, verified, chainFacts, collectedAt, checks)
+	evidence := buildEvidence(cfg, committed, challenge, chainFacts, collectedAt, checks)
 	evidenceBytes, evidenceHash, err := marshalEvidenceCanonical(evidence)
 	if err != nil {
 		return err
@@ -220,18 +255,22 @@ func runCollect(cmd *cobra.Command, cfg collectConfig) error {
 		CollectedAt:           collectedAt.Format(time.RFC3339Nano),
 		ProviderEndpoint:      cfg.providerGRPC,
 		ChainGRPCEndpoint:     cfg.chainGRPC,
-		Provider:              verified.Provider,
+		Provider:              committed.Provider,
 		Auditor:               cfg.auditor,
 		AuditEscrowID:         cfg.auditEscrowID,
-		ChainID:               verified.Payload.GetChainID(),
+		ChainID:               committed.Payload.GetChainID(),
 		BlockHeight:           chainFacts.BlockHeight,
-		SnapshotPayloadHash:   sha256Ref(verified.PayloadHash),
+		SnapshotPayloadHash:   sha256Ref(committed.PayloadHash),
+		CommittedSnapshotHash: sha256Ref(committed.PayloadHash),
+		ChallengeSnapshotHash: sha256Ref(challenge.PayloadHash),
 		InventoryNonce:        base64.StdEncoding.EncodeToString(nonce),
-		Signature:             base64.StdEncoding.EncodeToString(snapshotResp.GetSignature()),
-		SignatureVerified:     verified.SignatureVerified,
-		SignatureSkipped:      verified.SignatureSkipped,
-		ProviderPubKeyAddress: verified.ProviderPubKeyAddress,
-		Payload:               summarizePayload(verified.Payload),
+		Signature:             base64.StdEncoding.EncodeToString(committedResp.GetSignature()),
+		ChallengeSignature:    base64.StdEncoding.EncodeToString(challengeResp.GetSignature()),
+		SignatureVerified:     committed.SignatureVerified && challenge.SignatureVerified,
+		SignatureSkipped:      committed.SignatureSkipped || challenge.SignatureSkipped,
+		ProviderPubKeyAddress: committed.ProviderPubKeyAddress,
+		Payload:               summarizePayload(committed.Payload),
+		ChallengePayload:      summarizePayload(challenge.Payload),
 		Checks:                checks,
 		Warnings:              warnings,
 		Files:                 files,
@@ -244,7 +283,8 @@ func runCollect(cmd *cobra.Command, cfg collectConfig) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote collection artifacts to %s\n", outDir)
-	fmt.Fprintf(cmd.OutOrStdout(), "snapshot_hash=%s\n", sha256Ref(verified.PayloadHash))
+	fmt.Fprintf(cmd.OutOrStdout(), "snapshot_hash=%s\n", sha256Ref(committed.PayloadHash))
+	fmt.Fprintf(cmd.OutOrStdout(), "challenge_snapshot_hash=%s\n", sha256Ref(challenge.PayloadHash))
 	fmt.Fprintf(cmd.OutOrStdout(), "evidence_hash=%s\n", evidenceHash)
 
 	return nil
@@ -297,24 +337,36 @@ func randomNonce() ([]byte, error) {
 	return nonce, nil
 }
 
-func writeArtifacts(dir string, resp *inventoryv1.GetInventorySnapshotResponse, payload *inventoryv1.SnapshotPayload, nonce []byte) (map[string]string, error) {
+func writeArtifacts(dir string, committedResp *inventoryv1.GetCommittedInventorySnapshotResponse, committedPayload *inventoryv1.SnapshotPayload, challengeResp *inventoryv1.GetInventorySnapshotResponse, challengePayload *inventoryv1.SnapshotPayload, nonce []byte) (map[string]string, error) {
 	files := map[string]string{
-		"nonce":            filepath.Join(dir, "nonce.bin"),
-		"snapshot_payload": filepath.Join(dir, "snapshot_payload.pb"),
-		"signature":        filepath.Join(dir, "snapshot_signature.bin"),
-		"payload_json":     filepath.Join(dir, "snapshot_payload.json"),
+		"nonce":                      filepath.Join(dir, "nonce.bin"),
+		"snapshot_payload":           filepath.Join(dir, "snapshot_payload.pb"),
+		"signature":                  filepath.Join(dir, "snapshot_signature.bin"),
+		"payload_json":               filepath.Join(dir, "snapshot_payload.json"),
+		"challenge_snapshot_payload": filepath.Join(dir, "challenge_snapshot_payload.pb"),
+		"challenge_signature":        filepath.Join(dir, "challenge_snapshot_signature.bin"),
+		"challenge_payload_json":     filepath.Join(dir, "challenge_snapshot_payload.json"),
 	}
 
 	if err := os.WriteFile(files["nonce"], nonce, 0o644); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(files["snapshot_payload"], resp.GetSnapshotPayload(), 0o644); err != nil {
+	if err := os.WriteFile(files["snapshot_payload"], committedResp.GetSnapshotPayload(), 0o644); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(files["signature"], resp.GetSignature(), 0o644); err != nil {
+	if err := os.WriteFile(files["signature"], committedResp.GetSignature(), 0o644); err != nil {
 		return nil, err
 	}
-	if err := writeJSON(files["payload_json"], payload); err != nil {
+	if err := writeJSON(files["payload_json"], committedPayload); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(files["challenge_snapshot_payload"], challengeResp.GetSnapshotPayload(), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(files["challenge_signature"], challengeResp.GetSignature(), 0o644); err != nil {
+		return nil, err
+	}
+	if err := writeJSON(files["challenge_payload_json"], challengePayload); err != nil {
 		return nil, err
 	}
 
@@ -364,56 +416,7 @@ func sha256Bytes(payload []byte) []byte {
 }
 
 func snapshotPayloadHash(raw []byte) []byte {
-	payload, err := protoUnmarshalSnapshotPayload(raw)
-	if err != nil || !isSnapshotPayloadForHash(payload) {
-		return sha256Bytes(raw)
-	}
-
-	normalizeSnapshotPayloadForHash(payload)
-
-	canonical, err := protoMarshalDeterministic(payload)
-	if err != nil {
-		return sha256Bytes(raw)
-	}
-
-	return sha256Bytes(canonical)
-}
-
-func isSnapshotPayloadForHash(payload *inventoryv1.SnapshotPayload) bool {
-	return payload != nil &&
-		payload.GetSchemaVersion() != 0 &&
-		payload.GetProvider() != "" &&
-		payload.GetChainID() != ""
-}
-
-func normalizeSnapshotPayloadForHash(payload *inventoryv1.SnapshotPayload) {
-	payload.Nonce = nil
-	payload.Timestamp = time.Time{}
-	payload.EvidenceSections = nil
-
-	normalizeClusterForHash(&payload.Cluster)
-}
-
-func normalizeClusterForHash(cluster *inventoryv1.Cluster) {
-	for idx := range cluster.Nodes {
-		normalizeNodeResourcesForHash(&cluster.Nodes[idx].Resources)
-	}
-	for idx := range cluster.Storage {
-		normalizeResourcePairForHash(&cluster.Storage[idx].Quantity)
-	}
-}
-
-func normalizeNodeResourcesForHash(resources *inventoryv1.NodeResources) {
-	normalizeResourcePairForHash(&resources.CPU.Quantity)
-	normalizeResourcePairForHash(&resources.Memory.Quantity)
-	normalizeResourcePairForHash(&resources.GPU.Quantity)
-	normalizeResourcePairForHash(&resources.EphemeralStorage)
-	normalizeResourcePairForHash(&resources.VolumesAttached)
-	normalizeResourcePairForHash(&resources.VolumesMounted)
-}
-
-func normalizeResourcePairForHash(pair *inventoryv1.ResourcePair) {
-	pair.Allocated = nil
+	return sha256Bytes(raw)
 }
 
 func sha256Ref(hash []byte) string {

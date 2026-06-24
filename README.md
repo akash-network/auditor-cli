@@ -1,15 +1,17 @@
 # Auditor CLI
 
-`auditor-cli` is the local starting point for the AEP-86 L-5 reference auditor CLI.
+`auditor-cli` is the AEP-86 reference auditor CLI local split.
 
 This tool intentionally lives outside consensus code. The current slice implements local collection, offline evidence checks, sustained baseline comparison, and transaction command preparation:
 
 - generates a cryptographically random 32-byte nonce
-- calls provider `akash.inventory.v1.InventoryService/GetInventorySnapshot`
+- calls provider `akash.inventory.v1.InventoryService/GetInventorySnapshot` for a fresh nonce-bound challenge
+- calls provider `akash.inventory.v1.InventoryService/GetCommittedInventorySnapshot` for the exact committed payload
 - decodes `akash.inventory.v1.SnapshotPayload`
-- verifies nonce/provider/chain binding
+- verifies nonce/provider/chain binding on the challenge payload
+- verifies the committed payload hash against the provider snapshot hash on-chain
 - queries the chain gRPC auth account for the provider public key
-- verifies the provider signature over the raw `snapshot_payload` bytes
+- verifies the provider signature over both raw snapshot payloads
 - writes raw artifacts plus a draft `akash.audit.evidence.v1` JSON document
 - verifies that `evidence.draft.json` is schema-valid canonical JSON and matches `evidence.draft.sha256`
 - compares a current evidence artifact against a baseline artifact
@@ -18,7 +20,7 @@ This tool intentionally lives outside consensus code. The current slice implemen
 ## Run
 
 ```sh
-go run ./cmd/auditor-cli collect \
+GOWORK=off go run ./cmd/auditor-cli collect \
   --provider-grpc provider.example.com:8443 \
   --chain-grpc rpc.example.com:9090 \
   --auditor akash1... \
@@ -31,6 +33,8 @@ go run ./cmd/auditor-cli collect \
 The provider endpoint is the existing provider daemon gRPC endpoint with the public AEP-86 inventory service registered.
 The chain endpoint is an Akash node gRPC endpoint used to query the provider account public key and best-effort
 verification facts.
+Collection requires the provider to have already posted a snapshot hash on-chain. The draft evidence records that
+committed hash as `snapshot_hash` and the fresh challenge hash as `challenge_snapshot_hash`.
 `--software-binary-hash` is required and must use `sha256:<64-hex>` form so the draft evidence satisfies the
 strict evidence schema.
 
@@ -40,13 +44,13 @@ add `--provider-insecure`.
 Validate the local artifact directory before submitting evidence elsewhere:
 
 ```sh
-go run ./cmd/auditor-cli verify ./aep86-audit
+GOWORK=off go run ./cmd/auditor-cli verify ./aep86-audit
 ```
 
 Prepare a submission command from a verified artifact directory:
 
 ```sh
-go run ./cmd/auditor-cli submit \
+GOWORK=off go run ./cmd/auditor-cli submit \
   --fee 100uakt \
   --deposit 200uakt \
   ./aep86-audit
@@ -55,14 +59,14 @@ go run ./cmd/auditor-cli submit \
 Compare sustained-validation evidence against the original baseline:
 
 ```sh
-go run ./cmd/auditor-cli sustain ./aep86-baseline ./aep86-current
+GOWORK=off go run ./cmd/auditor-cli sustain ./aep86-baseline ./aep86-current
 ```
 
 Write a sustained-validation evidence artifact that can drive revocation command
 preparation:
 
 ```sh
-go run ./cmd/auditor-cli sustain \
+GOWORK=off go run ./cmd/auditor-cli sustain \
   --output-dir ./aep86-sustained \
   ./aep86-baseline \
   ./aep86-current
@@ -71,7 +75,7 @@ go run ./cmd/auditor-cli sustain \
 Prepare a revocation command from verified revocation evidence:
 
 ```sh
-go run ./cmd/auditor-cli revoke \
+GOWORK=off go run ./cmd/auditor-cli revoke \
   --reason software_identity_changed \
   ./aep86-sustained
 ```
